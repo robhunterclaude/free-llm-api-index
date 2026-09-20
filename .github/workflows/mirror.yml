@@ -1,0 +1,59 @@
+name: Mirror the AI and LLM free-tier index from the catalogue
+
+on:
+  schedule:
+    - cron: "37 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the index the catalogue's own gate published, or fail rather than overwrite
+        run: |
+          set -euo pipefail
+          src=https://raw.githubusercontent.com/robhunter/agentdeals/main/artifacts/free-llm-api-index/README.md
+          code=$(curl -sS -o /tmp/index.md -w '%{http_code}' "$src")
+          if [ "$code" != "200" ]; then
+            echo "the catalogue returned $code for the index; refusing to touch README.md"
+            exit 1
+          fi
+          bytes=$(wc -c < /tmp/index.md)
+          if [ "$bytes" -lt 10000 ]; then
+            echo "fetched $bytes bytes, which is too short to be the index; refusing"
+            exit 1
+          fi
+          if ! head -1 /tmp/index.md | grep -q '^# Free tiers for AI and LLM APIs'; then
+            echo "the fetched file does not open as the index; refusing"
+            exit 1
+          fi
+          rows=$(grep -c '^| \[' /tmp/index.md || true)
+          if [ "$rows" -lt 20 ]; then
+            echo "fetched index holds $rows rows, below the floor of 20; refusing"
+            exit 1
+          fi
+          echo "fetched $bytes bytes, $rows rows"
+          cp /tmp/index.md README.md
+
+      - name: Commit only when the index moved
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- README.md; then
+            echo "the index is unchanged; nothing to commit"
+            exit 0
+          fi
+          git config user.name "robhunterclaude"
+          git config user.email "robhunterclaude@users.noreply.github.com"
+          rows=$(grep -c '^| \[' README.md || true)
+          git add README.md
+          git commit -m "Mirror the index the catalogue published — ${rows} records"
+          git push
